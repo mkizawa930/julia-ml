@@ -30,7 +30,7 @@ function (pe::PositionalEncoding)(x)
     x .+ pe.A
 end
 
-struct Attention
+struct MultiHeadAttention
     Wk::Dense
     Wq::Dense
     Wv::Dense
@@ -39,15 +39,7 @@ struct Attention
     mask::Function
 end
 
-Flux.@layer Attention
 
-function Attention(input_dim, output_dim, mask=identity)
-    Wk = Dense(input_dim, output_dim, bias=false)
-    Wq = Dense(input_dim, output_dim, bias=false)
-    Wv = Dense(input_dim, output_dim, bias=false)
-    Linear = Dense(output_dim, output_dim)
-    Attention(Wk, Wq, Wv, input_dim, output_dim, mask)
-end
 
 """
 AttentionのFunctorの定義
@@ -62,8 +54,8 @@ inputs:
 returns:
 
 """
-function (attention::Attention)(key, query, value)
-    (;Wk, Wq, Wv, input_dim, output_dim) = attention
+function (layer::MultiHeadAttention)(key, query, value)
+    (;Wk, Wq, Wv, input_dim, output_dim) = layer
 
     k_seq_len = size(key)[2]
     q_seq_len = size(query)[2]
@@ -73,59 +65,40 @@ function (attention::Attention)(key, query, value)
     @assert k_seq_len == v_seq_len
 
     # head_dim, seq_len, batch_size
-    K = Wk(key) 
+    K = Wk(key)
     Q = Wq(query) 
     V = Wv(value)
 
-    K_Q = zeros(Float32, k_seq_len, q_seq_len, batch_size)
-    for i in axes(K_Q,3) # n_heads
-        @views K_Q[:,:,i] .= gemm('T', 'N', K[:,:,i], Q[:,:,i])
+    # split into each heads
+    K = reshape(K, head_dim, n_heads, k_seq_len, batch_size)
+    Q = reshape(Q, head_dim, n_heads, q_seq_len, batch_size)
+    V = reshape(V, head_dim, n_heads, v_seq_len, batch_size)
+    
+
+    K_Q = zeros(Float32, k_seq_len, q_seq_len, n_heads, batch_size)
+    Threads.@threads for i in axes(K_Q,3) # n_heads
+        for j in axes(K_Q, 4) # batch
+            @views K_Q[:,:,i,j] .= gemm('T', 'N', K[:,i,:,j], Q[:,i,:,j])
+        end
     end
 
     # dot product on each sequence
     # TODO: mask
     K_Q = softmax.(K_Q) ./ sqrt(oupput_dim)
 
-    S = zeros(Float32, output_dim, v_seq_len, batch_size)
-    @show size(S), size(V), size(K_Q)
-    for i in axes(S,3)
-        @views S[:,:,i] .= gemm('N', 'N', V[:,:,i], K_Q[:,:,i]) # seq_len, single_head_dim
+    S = zeros(Float32, output_dim, n_heads, v_seq_len, batch_size)
+    Threads.@threads for i in axes(S,3) # heads
+        for j in axes(S, 4) # batch
+            @views S[:,:,i,j] .= gemm('N', 'N', V[:,i,:,j], K_Q[:,:,i,j]) # seq_len, single_head_dim
+        end
     end
-    S
+    reshape(S, n_heads*head_dim, seq_len, batch_size)
 end
 
-
-"""
-MultiHeadAttention
-"""
-struct MultiHeadAttention
-    attentions::Vector{Attention}
-    weight::Dense
-    n_heads::Int
-    input_dim::Int
-    hidden_dim::Int
+function scaled_dot_product()
+    # TODO
 end
 
-Flux.@layer MultiHeadAttention
-
-function MultiHeadAttention(n_heads, input_dim)
-    hidden_dim = floor(Int, input_dim / n_heads)
-    attentions = [Attention(input_dim, hidden_dim) for i in 1:n_heads]
-    weight = Dense(input_dim, input_dim)
-    return MultiHeadAttention(attentions, weight, n_heads, input_dim, hidden_dim)
-end
-
-function (mha::MultiHeadAttention)(key, query, value)
-    (; input_dim, hidden_dim, n_heads) = mha
-
-    batch_size = size(key)[end]
-
-    outs = zeros(input_dim, seq_len, batch_size)
-    Threads.@threads for (i, attention) in enumerate(mha.attentions)
-        outs[(i-1)*hidden_dim+1:i*hidden_dim,:,:] = attention(key, query, value)
-    end
-    mha.weight(outs)
-end
 
 struct PositionWiseFeedForward
     chain::Chain
