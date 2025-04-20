@@ -1,0 +1,26 @@
+# VAE
+
+```{julia}
+include("./VAE.jl")
+
+using .VAE
+
+using Test
+using Flux
+using MLDatasets
+using Plots
+using Images
+
+include("./VAE.jl")
+
+## データセット用意
+train_data = MNIST(split=:train)
+test_data = MNIST(split=:test)
+
+X_train, y_train = train_data.features, train_data.targets
+X_test, y_test = test_data.features, test_data.targets
+
+train_dataloader = Flux.DataLoader((Flux.flatten(X_train), y_train,), batchsize=1000, shuffle=true)
+test_dataloader = Flux.DataLoader((Flux.flatten(X_test), y_test,), batchsize=1000, shuffle=false)
+
+```

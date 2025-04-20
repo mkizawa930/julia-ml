@@ -5,6 +5,8 @@ import Flux: params
 using Statistics
 
 
+"""
+"""
 struct Encoder
     l1::Dense
     l21::Dense
